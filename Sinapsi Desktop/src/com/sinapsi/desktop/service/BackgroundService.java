@@ -168,7 +168,7 @@ public class BackgroundService implements Runnable, OnlineStatusProvider, Sinaps
 	}
 
 	@Override
-	public void onWebSocketMessage() {
+	public void onWebSocketMessage(String message) {
 		// TODO Auto-generated method stub
 
 	}
