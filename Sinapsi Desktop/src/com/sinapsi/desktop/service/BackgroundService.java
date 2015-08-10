@@ -1,368 +1,224 @@
 package com.sinapsi.desktop.service;
 
-import java.util.ArrayList;
 import java.util.List;
 
-import javax.print.attribute.standard.MediaSize.Engineering;
-
-import com.google.gson.Gson;
-import com.sinapsi.client.AppConsts;
-import com.sinapsi.client.SafeSyncManager;
-import com.sinapsi.client.SyncManager;
 import com.sinapsi.client.SyncManager.ConflictResolutionCallback;
+import com.sinapsi.client.background.SinapsiDaemonThread;
+import com.sinapsi.client.background.SinapsiDaemonThread.DBManagerProvider;
+import com.sinapsi.client.persistence.DiffDBManager;
+import com.sinapsi.client.persistence.LocalDBManager;
+import com.sinapsi.client.persistence.UserSettingsFacade;
 import com.sinapsi.client.persistence.syncmodel.MacroSyncConflict;
 import com.sinapsi.client.web.OnlineStatusProvider;
-import com.sinapsi.client.web.RetrofitWebServiceFacade;
-import com.sinapsi.client.web.UserLoginStatusListener;
-import com.sinapsi.client.web.SinapsiWebServiceFacade.WebServiceCallback;
+import com.sinapsi.client.web.SinapsiWebServiceFacade;
 import com.sinapsi.client.websocket.WSClient;
+import com.sinapsi.desktop.enginesystem.DefaultLinuxModules;
 import com.sinapsi.desktop.enginesystem.DesktopActivationManager;
 import com.sinapsi.desktop.enginesystem.DesktopDeviceInfo;
-import com.sinapsi.desktop.enginesystem.DesktopNotificationAdapter;
 import com.sinapsi.desktop.log.DesktopClientLog;
 import com.sinapsi.desktop.persistence.DesktopDiffDBManager;
 import com.sinapsi.desktop.persistence.DesktopLocalDBManager;
-import com.sinapsi.engine.ComponentFactory;
+import com.sinapsi.desktop.persistence.LinuxUserSettingsFacade;
 import com.sinapsi.engine.MacroEngine;
-import com.sinapsi.engine.VariableManager;
-import com.sinapsi.engine.components.ActionLog;
-import com.sinapsi.engine.components.ActionSetVariable;
-import com.sinapsi.engine.components.ActionSimpleNotification;
-import com.sinapsi.engine.components.TriggerEngineStart;
-import com.sinapsi.engine.execution.ExecutionInterface;
 import com.sinapsi.engine.execution.RemoteExecutionDescriptor;
-import com.sinapsi.engine.execution.WebExecutionInterface;
 import com.sinapsi.engine.log.LogMessage;
 import com.sinapsi.engine.log.SinapsiLog;
 import com.sinapsi.engine.log.SystemLogInterface;
-import com.sinapsi.engine.system.NotificationAdapter;
+import com.sinapsi.engine.modules.DefaultCoreModules;
+import com.sinapsi.engine.requirements.DefaultRequirementResolver;
+
+import com.sinapsi.engine.system.PlatformDependantObjectProvider;
 import com.sinapsi.engine.system.SystemFacade;
 import com.sinapsi.model.DeviceInterface;
-import com.sinapsi.model.MacroInterface;
 import com.sinapsi.model.UserInterface;
-import com.sinapsi.model.impl.CommunicationInfo;
-import com.sinapsi.utils.Pair;
-import com.sinapsi.webshared.ComponentFactoryProvider;
-import com.sinapsi.webshared.wsproto.SinapsiMessageTypes;
-import com.sinapsi.webshared.wsproto.WebSocketEventHandler;
-import com.sinapsi.webshared.wsproto.WebSocketMessage;
 
-public class BackgroundService implements Runnable, OnlineStatusProvider, WebSocketEventHandler, UserLoginStatusListener, ComponentFactoryProvider {
+public class BackgroundService implements Runnable, OnlineStatusProvider, SinapsiDaemonThread.DaemonCallbacks  {
 
+	private SinapsiDaemonThread daemon;
+	private UserSettingsFacade userSettings;
 	private SinapsiLog sinapsiLog;
-	private RetrofitWebServiceFacade web;
-	private DeviceInterface device;
-	private MacroEngine macroEngine;
-	private SafeSyncManager safeSyncManager;
+	private String rootPassw;
 	private DesktopDeviceInfo deviceInfo;
-	private String rootPasswd;
-	
-	public MacroEngine getEngine() {
-		return this.macroEngine;
-	}
 
-	public BackgroundService(String rootPasswd) {
-		this.rootPasswd = rootPasswd;
+	public BackgroundService(String rootPassw){
+		this.rootPassw = rootPassw;
+		this.deviceInfo = new DesktopDeviceInfo();
+		deviceInfo.init(rootPassw);
+
+		userSettings = new LinuxUserSettingsFacade();
+
 		sinapsiLog = new SinapsiLog();
 		sinapsiLog.addLogInterface(new SystemLogInterface() {
 
 			@Override
 			public void printMessage(LogMessage lm) {
-				System.out.println(lm.getTag() + ": " + lm.getMessage());				
+				System.out.println(lm.getTag() + ": " + lm.getMessage());
 			}
 		});
 
-		web = new RetrofitWebServiceFacade(
-				new DesktopClientLog(), 
-				this, 
-				this, 
-				this, 
-				this);
-
-		deviceInfo = new DesktopDeviceInfo(rootPasswd);
-	}
-
-	public void initEngine() {
-		WebExecutionInterface exe = new WebExecutionInterface() {
-
-			@Override
-			public void continueExecutionOnDevice(ExecutionInterface ei,
-					DeviceInterface di) {
-				web.continueMacroOnDevice(device, di, new RemoteExecutionDescriptor(
-						ei.getMacro().getId(), 
-						ei.getLocalVars(), 
-						ei.getExecutionStackIndexes()), 
-						new WebServiceCallback<CommunicationInfo>() {
+		daemon = new SinapsiDaemonThread(
+				userSettings,
+				sinapsiLog,
+				new DesktopClientLog(),
+				null,
+				null,
+				new DesktopActivationManager(),
+				new DefaultRequirementResolver() {
+					@Override
+					public void resolveRequirements(SystemFacade sf) {
+						sf.setRequirementSpec(DefaultCoreModules.REQUIREMENT_RESTARTABLE_MACRO_ENGINE, true);
+						sf.setRequirementSpec(DefaultCoreModules.REQUIREMENT_SIMPLE_NOTIFICATIONS, true);
+					}
+				},
+				new PlatformDependantObjectProvider() {
+					@Override
+					public Object getObject(ObjectKey key) throws ObjectNotAvailableException {
+						switch (key) {
+						case LINUX_ROOT_PERMISSIONS:
+							return rootPassw; //TODO: pass an object which, with more security, handles root task requests, instead of password.
+						case LOGGED_USER:
+							return daemon.getUserSettings();
+						default:
+							throw new ObjectNotAvailableException(key.name());
+						}
+					}
+				},
+				new DBManagerProvider() {
 
 					@Override
-					public void success(CommunicationInfo t, Object response) {
-						sinapsiLog.log("EXECUTION_CONTINUE", t.getAdditionalInfo());
+					public LocalDBManager openLocalDBManager(String fileName,
+							com.sinapsi.engine.component.ComponentFactory componentFactory) {
+						return new DesktopLocalDBManager();
 					}
 
 					@Override
-					public void failure(Throwable error) {
-						sinapsiLog.log("EXECUTION_CONTINUE", "FAIL");
+					public DiffDBManager openDiffDBManager(String fileName) {
+						return new DesktopDiffDBManager();
 					}
-				});			
-			}
-		};
-
-		SystemFacade sf = new SystemFacade(); // TODO fill
-		sf.addSystemService(NotificationAdapter.SERVICE_NOTIFICATION, new DesktopNotificationAdapter());
-		sf.setRequirementSpec(NotificationAdapter.REQUIREMENT_SIMPLE_NOTIFICATIONS, true);
-		VariableManager globalVariables = new VariableManager();
-		macroEngine = new MacroEngine(device, 
-				new DesktopActivationManager(
-						new ExecutionInterface(
-								sf, 
-								device, 
-								exe, 
-								globalVariables, 
-								sinapsiLog)), 
-								sinapsiLog, 
-								TriggerEngineStart.class, 
-								ActionSetVariable.class, 
-								ActionLog.class,
-								ActionSimpleNotification.class);
-
-
-		SyncManager syncManager = new SyncManager(web, 
-				new DesktopLocalDBManager(), 
-				new DesktopLocalDBManager(), 
-				new DesktopDiffDBManager(), 
-				device);
-
-		safeSyncManager = new SafeSyncManager(syncManager, this);
-
-		if(AppConsts.DEBUG_CLEAR_DB_ON_START)
-			syncManager.clearAll();
-
-
-
-		macroEngine.startEngine();
-		
-		//TODO: eliminare questo dopo aver fatto i db manager
-		getWeb().getAllMacros(device, new WebServiceCallback<Pair<Boolean,List<MacroInterface>>>() {
-
-			@Override
-			public void success(Pair<Boolean, List<MacroInterface>> t,
-					Object response) {
-				macroEngine.clearMacros();
-				macroEngine.addMacros(t.getSecond());
-				
-			}
-
-			@Override
-			public void failure(Throwable error) {
-				System.out.println("Error");				
-			}
-		});
-	}
-
-	public List<MacroInterface> getMacros() {
-		return new ArrayList<>(macroEngine.getMacros().values());
-	}
-
-	public void handleWSMessage(String message, boolean firstCall) {
-		Gson gson = new Gson();
-		WebSocketMessage wsMessage = gson.fromJson(message, WebSocketMessage.class);
-
-		switch(wsMessage.getMsgType()) {
-		case SinapsiMessageTypes.REMOTE_EXECUTION_DESCRIPTOR: {
-			RemoteExecutionDescriptor red = gson.fromJson(wsMessage.getData(), RemoteExecutionDescriptor.class);
-			try {
-				macroEngine.continueMacro(red);
-			} catch(MacroEngine.MissingMacroException e) {
-				if(firstCall) {
-					syncMacros(new BackgroundSyncCallback() {
-
-						@Override
-						public void onBackgroundSyncSuccess(List<MacroInterface> currentMacros) {
-							handleWSMessage(message, false);							
-						}
-
-						@Override
-						public void onBackgroundSyncFail(Throwable error) {
-							// TODO Auto-generated method stub
-						}
-
-					}, false);
-
-				} else 					
-					e.printStackTrace();
-			}
-		} break;
-
-		case SinapsiMessageTypes.MODEL_UPDATED_NOTIFICATION: {
-			//TODO: eliminare questo dopo aver fatto i db manager
-			getWeb().getAllMacros(device, new WebServiceCallback<Pair<Boolean,List<MacroInterface>>>() {
-
-				@Override
-				public void success(Pair<Boolean, List<MacroInterface>> t,
-						Object response) {
-					macroEngine.clearMacros();
-					macroEngine.addMacros(t.getSecond());
-					
-				}
-
-				@Override
-				public void failure(Throwable error) {
-					System.out.println("Error");				
-				}
-			});
-			/*syncMacros(new BackgroundSyncCallback() {
-
-				@Override
-				public void onBackgroundSyncSuccess(List<MacroInterface> currentMacros) {
-					// Do nothing					
-				}
-
-				@Override
-				public void onBackgroundSyncFail(Throwable error) {
-					//Do nothing					
-				}
-			},false);*/
-		} break;
-
-		case SinapsiMessageTypes.NEW_CONNECTION: {
-
-		} break;
-
-		case SinapsiMessageTypes.CONNECTION_LOST: {
-
-		} break;
-
-		}
-	}	
-
-	public WSClient getWSClient() {
-		return getWeb().getWebSocketClient();
-	}
-
-	@Override
-	public void run() {
-		while(true);
-	}
-
-	@Override
-	public void onWebSocketOpen() {
-		// TODO Log
-	}
-
-	@Override
-	public void onWebSocketMessage(String message) {
-		// TODO Log
-		handleWSMessage(message, true);
-	}
-
-	@Override
-	public void onWebSocketError(Exception ex) {
-		// TODO Log
-	}
-
-	@Override
-	public void onWebSocketClose(int code, String reason, boolean remote) {
-		// TODO Log
+				},
+				this,
+				this,
+				DefaultCoreModules.ANTARES_CORE_MODULE,
+				DefaultCoreModules.ANTARES_COMMON_COMPONENTS_MODULE,
+				DefaultLinuxModules.ANTARES_LINUX_DESKTOP_MODULE);
 	}
 
 	@Override
 	public boolean isOnline() {
-		// TODO device is online
-		return true;
+		return false;
 	}
 
-	public DeviceInterface getDevice() {
-		return device;
+	@Override
+	public void run() {
+		daemon.run();
+	}
+
+	@Override
+	public void onEngineStarted() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onEnginePaused() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onUserLogin(UserInterface user) {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onUserLogout() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onSyncConflicts(List<MacroSyncConflict> conflicts, ConflictResolutionCallback callback) {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onSyncFailure(Throwable e, boolean showError) {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketError(Exception ex) {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketClose(int code, String reason, boolean remote) {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketOpen() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketMessage() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketUpdatedNotificationReceived() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketNewConnectionNotificationReceived() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public void onWebSocketConnectionLostNotificationReceived() {
+		// TODO Auto-generated method stub
+
+	}
+
+	@Override
+	public boolean onWebSocketRemoteExecutionDescriptorReceived(RemoteExecutionDescriptor red) {
+		// TODO Auto-generated method stub
+		return false;
+	}
+
+	public SinapsiWebServiceFacade getWeb() {
+		return daemon.getWeb();
 	}
 
 	public void setDevice(DeviceInterface device) {
-		this.device = device;
-	}
-
-	public RetrofitWebServiceFacade getWeb() {
-		return web;
-	}
-
-	@Override
-	public ComponentFactory getComponentFactory() {
-		return macroEngine.getComponentFactory();
-	}
-
-	@Override
-	public void onUserLogIn(UserInterface user) {
-		// TODO Auto-generated method stub
-
-	}
-
-	public static interface BackgroundSyncCallback {
-		public void onBackgroundSyncSuccess(List<MacroInterface> currentMacros);
-
-		public void onBackgroundSyncFail(Throwable error);
-	}
-
-	private class BackgroundServiceInternalSyncCallback implements SyncManager.MacroSyncCallback {
-
-		private final BackgroundSyncCallback callback;
-		private final boolean userIntention;
-
-		public BackgroundServiceInternalSyncCallback(BackgroundSyncCallback callback, boolean userIntention) {
-			this.callback = callback;
-			this.userIntention = userIntention;
-		}
-
-		@Override
-		public void onSyncSuccess(List<MacroInterface> currentMacros) {
-			macroEngine.clearMacros();
-			macroEngine.addMacros(currentMacros);
-			callback.onBackgroundSyncSuccess(currentMacros);
-		}
-
-		@Override
-		public void onSyncConflicts(List<MacroSyncConflict> conflicts, SyncManager.ConflictResolutionCallback conflictCallback) {
-			handleConflicts(conflicts, conflictCallback);
-		}
-
-		@Override
-		public void onSyncFailure(Throwable error) {
-			handleSyncFailure(error, userIntention);
-			callback.onBackgroundSyncFail(error);
-		}
-	}
-
-	public void handleConflicts(List<MacroSyncConflict> conflicts, SyncManager.ConflictResolutionCallback callback) {
-
-	}
-
-	public void handleSyncFailure(Throwable e, boolean showError) {
-
-	}
-
-	@Override
-	public void onUserLogOut() {
-		// TODO Auto-generated method stub
-
-	}
-
-	public void syncMacros(final BackgroundSyncCallback callback, final boolean userIntention) {
-		safeSyncManager.getMacros(new BackgroundServiceInternalSyncCallback(callback, userIntention));
-	}
-
-	public void removeMacro(int id, final BackgroundSyncCallback callback, final boolean userIntention) {
-		safeSyncManager.removeMacro(id, new BackgroundServiceInternalSyncCallback(callback, userIntention));
-	}
-
-	public void updateMacro(MacroInterface macro, final BackgroundSyncCallback callback, final boolean userIntention) {
-		safeSyncManager.updateMacro(macro, new BackgroundServiceInternalSyncCallback(callback, userIntention));
-	}
-
-	public void addMacro(MacroInterface macro, final BackgroundSyncCallback callback, final boolean userIntention) {
-		safeSyncManager.addMacro(macro, new BackgroundServiceInternalSyncCallback(callback, userIntention));
+		daemon.setDevice(device);
 	}
 
 	public DesktopDeviceInfo getDeviceInfo() {
-
 		return deviceInfo;
 	}
 
+	public void initEngine() {
+		daemon.initEngine();
+	}
+
+	public WSClient getWSClient() {
+		return daemon.getWSClient();
+	}
+
+	public MacroEngine getEngine() {
+		return daemon.getEngine();
+	}
 
 }
