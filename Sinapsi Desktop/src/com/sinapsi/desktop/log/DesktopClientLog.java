@@ -6,7 +6,7 @@ public class DesktopClientLog implements RestAdapter.Log{
 
 	@Override
 	public void log(String arg0) {
-		System.out.println(arg0);		
+		System.out.println(arg0);
 	}
-	
+
 }

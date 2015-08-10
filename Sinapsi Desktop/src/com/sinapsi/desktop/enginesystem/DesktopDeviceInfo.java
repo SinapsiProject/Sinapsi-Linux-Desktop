@@ -2,13 +2,29 @@ package com.sinapsi.desktop.enginesystem;
 
 import com.sinapsi.desktop.DesktopConsts;
 import com.sinapsi.desktop.controller.RootAccess;
-import com.sinapsi.engine.system.DeviceInfoAdapter;
+import com.sinapsi.engine.SinapsiPlatforms;
+import com.sinapsi.engine.annotations.AdapterImplementation;
+import com.sinapsi.engine.annotations.Component;
+import com.sinapsi.engine.annotations.InitializationNeededObjects;
+import com.sinapsi.engine.modules.common.DeviceInfoAdapter;
+import com.sinapsi.engine.system.PlatformDependantObjectProvider;
+import com.sinapsi.model.module.ModuleMember;
 
+@ModuleMember(DefaultLinuxModules.ANTARES_LINUX_DESKTOP_MODULE_NAME)
+@AdapterImplementation(
+		value = DeviceInfoAdapter.ADAPTER_DEVICE_INFO,
+		platform = SinapsiPlatforms.PLATFORM_LINUX_DESKTOP
+)
+@InitializationNeededObjects({
+	PlatformDependantObjectProvider.ObjectKey.LINUX_ROOT_PERMISSIONS
+})
 public class DesktopDeviceInfo implements DeviceInfoAdapter {
 
 	private String rootPsw;
 
-	public DesktopDeviceInfo(String rootPsw) {
+	@Override
+	public void init(Object... requiredPlatformDependantObjects) {
+		String rootPsw = (String) requiredPlatformDependantObjects[0];
 		this.rootPsw = rootPsw;
 	}
 
@@ -50,4 +66,6 @@ public class DesktopDeviceInfo implements DeviceInfoAdapter {
 	public int getVersion() {
 		return DesktopConsts.CLIENT_VERSION;
 	}
+
+
 }

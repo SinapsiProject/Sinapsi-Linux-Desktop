@@ -1,9 +1,25 @@
 package com.sinapsi.desktop.enginesystem;
 
 import java.io.IOException;
-import com.sinapsi.engine.system.NotificationAdapter;
 
+import com.sinapsi.engine.SinapsiPlatforms;
+import com.sinapsi.engine.annotations.AdapterImplementation;
+import com.sinapsi.engine.annotations.InitializationNeededObjects;
+import com.sinapsi.engine.modules.common.NotificationAdapter;
+import com.sinapsi.model.module.ModuleMember;
+
+@ModuleMember(DefaultLinuxModules.ANTARES_LINUX_DESKTOP_MODULE_NAME)
+@AdapterImplementation(
+		value = NotificationAdapter.ADAPTER_NOTIFICATION,
+		platform = SinapsiPlatforms.PLATFORM_LINUX_DESKTOP)
+@InitializationNeededObjects({})
 public class DesktopNotificationAdapter implements NotificationAdapter {
+
+	@Override
+	public void init(Object... requiredPlatformDependantObjects) {
+		//does nothing
+
+	}
 
 	@Override
 	public void showSimpleNotification(String title, String message) {
@@ -16,4 +32,6 @@ public class DesktopNotificationAdapter implements NotificationAdapter {
 			e.printStackTrace();
 		}
 	}
+
+
 }
