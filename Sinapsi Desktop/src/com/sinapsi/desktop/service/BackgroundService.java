@@ -84,11 +84,10 @@ public class BackgroundService implements Runnable, OnlineStatusProvider, Sinaps
 					}
 				},
 				new DBManagerProvider() {
-
 					@Override
 					public LocalDBManager openLocalDBManager(String fileName,
 							com.sinapsi.engine.component.ComponentFactory componentFactory) {
-						return new DesktopLocalDBManager();
+						return new DesktopLocalDBManager(fileName);
 					}
 
 					@Override
